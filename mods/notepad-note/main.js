@@ -17,10 +17,14 @@ const allTabs = () => spaces().flatMap((s) => s.tabs);
 // Selected text sent to an agent is kept in the file as `text` ✻ (markdown inline code, then the
 // mark) and drawn in the editor as one boxed chip, Slack code style, live while its agent works.
 const SENT = /`([^`\n]+)` ✻/g;
+// Done text is kept as ~~text~~ (markdown strikethrough) and drawn faded with a line through it.
+const STRUCK = /~~([^~\n]+)~~/g;
+const SPANS = /~~([^~\n]+)~~|`([^`\n]+)` ✻/g;
 const unbox = (text) => text.replace(SENT, "$1").split(MARK).join("");
 const boxed = (text) => ({
   text,
-  tokens: [...text.matchAll(SENT)].map((m) => ({ range: { start: m.index, end: m.index + m[0].length }, token: { id: `sent-${m.index}`, text: m[0], label: m[1] } })),
+  tokens: [...text.matchAll(SPANS)].map((m) => ({ range: { start: m.index, end: m.index + m[0].length },
+    token: m[1] != null ? { id: `struck-${m.index}`, text: m[0], label: m[1] } : { id: `sent-${m.index}`, text: m[0], label: m[2] } })),
 });
 
 const base = (f) => f?.split("/").pop();
@@ -67,9 +71,16 @@ export default class Note extends View {
   // Every write to the body goes through here, so sent text comes back as chips.
   setBody(text) { this.body.set_value(boxed(text)); }
 
+  // A token's look: struck text faded with a line through it (a struck chip stays a chip), or a chip.
+  token({ token }, t, size) {
+    if (!token.id.startsWith("struck")) return this.chip(token.label ?? token.text, t, size);
+    const sent = /^`([^`\n]+)` ✻$/.exec(token.label);
+    if (sent) return this.chip(sent[1], t, size).opacity(0.5).line_through();
+    return div().font_family(".SystemUIFont").text_size(size).text_color(t.dim).line_through().child(token.label);
+  }
+
   // A sent chip: its text in a code box, orange-bordered with a spinner while its agent works.
-  chip({ token }, t, size) {
-    const inner = token.label ?? token.text;
+  chip(inner, t, size) {
     const links = (shared("notepad.links") ?? {})[this.file] ?? [];
     const link = links.filter((l) => l.snippet === inner.trim().slice(0, 60)).pop();
     const tab = link?.tab ? allTabs().find((x) => x.id === link.tab) : null;
@@ -162,6 +173,11 @@ export default class Note extends View {
       }
     }
     this.resolveLinks();
+    const struck = shared("notepad.strike");
+    if (struck?.file === this.file && this.loaded) {
+      setShared("notepad.strike", null);
+      this.strike(struck.range);
+    }
     const sent = shared("notepad.sent");
     if (sent?.file === this.file && this.loaded) {
       setShared("notepad.sent", null);
@@ -191,6 +207,30 @@ export default class Note extends View {
       ? text.slice(0, end) + MARK + text.slice(end)
       : `${text.slice(0, start)}\`${sel}\`${MARK}${text.slice(end)}`);
     this.last = this.body.value();
+    this.dirty = true;
+  }
+
+  // Strikes the selection through (each line apart; at a plain caret, the caret's line), or, if it
+  // touches struck text, takes the line off that instead. List prefixes (☐, •, 1.) stay unstruck.
+  strike(r) {
+    if (!r) return;
+    const text = this.body.value();
+    const hits = [...text.matchAll(STRUCK)].filter((m) => m.index <= r.end && m.index + m[0].length >= r.start);
+    let out = text;
+    if (hits.length) {
+      for (const m of hits.reverse()) out = out.slice(0, m.index) + m[1] + out.slice(m.index + m[0].length);
+    } else {
+      let { start, end } = r;
+      if (start === end) { start = text.lastIndexOf("\n", start - 1) + 1; end = text.indexOf("\n", end); if (end < 0) end = text.length; }
+      const lines = text.slice(start, end).split("\n").map((l) => {
+        const m = l.match(/^((?:☐ |☑ |• |– |▏ |\d+\. )?\s*)(.*?)(\s*)$/);
+        return m[2] && !m[2].includes("~~") ? `${m[1]}~~${m[2]}~~${m[3]}` : l;
+      });
+      out = text.slice(0, start) + lines.join("\n") + text.slice(end);
+    }
+    if (out === text) return;
+    this.setBody(out);
+    this.last = out;
     this.dirty = true;
   }
 
@@ -394,6 +434,10 @@ export default class Note extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { this.formatOpen = !this.formatOpen && Date.now() - (this.closedAt ?? 0) > 300; cx.notify(); }).child("Aa"))
         .child(tool("tb-check", "mods/notepad-note/list-checks.svg", "Checklist", () => this.checklist()))
+        .child(div().id("tb-strike").h(30).px(8).flex_none().flex().items_center().rounded(7).text_size(15).text_color(t.muted)
+          .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Strikethrough (⌘⇧X)")
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { this.strike(this.range()); cx.notify(); }).child(div().line_through().child("S")))
         .child(tool("tb-copy", "mods/notepad-note/copy.svg", "Copy note", (cx) => {
           cx.write_to_clipboard(this.text());
           notify({ title: "Note copied", level: "success", timeout: 1500 });
@@ -416,7 +460,13 @@ export default class Note extends View {
       .child(div().w_full().flex().justify_center().text_size(12).text_color(t.dim).child(date))
       .child(Input.new(this.head).w_full().h(Math.round(size * 2.6)).font_family(".SystemUIFont").text_size(Math.round(size * 1.73)).font_bold().text_color(t.foreground))
       .child(div().flex_1().min_h(0).w_full().flex().flex_col().relative()
-        .child(Textarea.new(this.body).token((tok) => this.chip(tok, t, size)).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
+        .on_key_down((e, cx) => {
+          if (e.key.toLowerCase() !== "x" || !e.modifiers.platform || !e.modifiers.shift) return;
+          cx.stop_propagation();
+          this.strike(this.range());
+          cx.notify();
+        })
+        .child(Textarea.new(this.body).token((tok) => this.token(tok, t, size)).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
         // Drawn over the body so it gets right presses first: stopping them keeps the selection.
         // Left presses carry on to the textarea underneath.
         .child(div().id("note-right-click").absolute().inset(0)
@@ -424,7 +474,7 @@ export default class Note extends View {
             cx.stop_propagation();
             // A window, not a popup: it leaves the keyboard with the body, and the body only draws
             // its selection while it has the keyboard. note-menu closes itself on a press outside.
-            openOverlay({ mod: "notepad-menu", kind: "window", at: { x: e.position.x, y: e.position.y }, width: 240, height: 76,
+            openOverlay({ mod: "notepad-menu", kind: "window", at: { x: e.position.x, y: e.position.y }, width: 240, height: 108,
               props: { file: this.file, range: this.range(), selection: this.selection() } });
           }))))
       .when(Boolean(this.formatOpen), (el) => el.child(menu));

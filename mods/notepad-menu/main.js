@@ -43,6 +43,8 @@ export default class NoteMenu extends View {
     return v_flex().id("note-menu").w_full().p(4).bg(t.popover).text_size(13)
       .on_mouse_down_out(() => closeOverlay(props().overlay))
       .child(item("sel", "New agent with selection", () => this.start(props().selection)))
-      .child(item("all", "New agent with whole note", async () => this.start(await readTextFile(props().file), true)));
+      .child(item("all", "New agent with whole note", async () => this.start(await readTextFile(props().file), true)))
+      // The note does the striking: it holds the text (see notepad-note's strike).
+      .child(item("strike", "Strikethrough", () => { const { file, range } = props(); setShared("notepad.strike", { file, range }); closeOverlay(props().overlay); }));
   }
 }
