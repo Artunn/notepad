@@ -10,6 +10,8 @@ import { theme, props, readTextFile, writeTextFile, shared, setShared, run, noti
 
 // The Claude mark put after text sent to an agent (notepad-menu strips it from what it sends).
 const MARK = " ✻";
+// Claude's orange, for the mark in the linked-agent bar.
+const ORANGE = "#d97757";
 const allTabs = () => spaces().flatMap((s) => s.tabs);
 
 const base = (f) => f?.split("/").pop();
@@ -199,12 +201,12 @@ export default class Note extends View {
         const color = status ? COLOR[status] : t.dim;
         const label = !l.tab ? "starting…" : !tab ? "ended" : WORD[status] ?? "no agent";
         return h_flex().id(`link-${l.id}`).h(24).pl(8).pr(4).gap(6).items_center().rounded(6).max_w(360)
-          .border_1().border_color(status === "working" ? color : t.border).bg(t.surface)
+          .border_1().border_color(status === "working" ? ORANGE : t.border).bg(t.surface)
           .when(Boolean(tab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`Show ${tab.name}`)
             .on_click(() => agent ? run("agent.focus", { terminal: agent.address }) : run("tab.select", { id: tab.id })))
           .child(status === "working"
-            ? svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(color).spin(900)
-            : div().flex_none().text_color(color).child("✻"))
+            ? svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(ORANGE).spin(900)
+            : div().flex_none().text_color(ORANGE).child("✻"))
           .child(div().min_w(0).truncate().text_color(t.foreground).child(l.snippet))
           .child(div().flex_none().text_color(t.dim).child(`→ ${tab?.name ?? "agent"}`))
           .child(div().flex_none().text_color(color).child(label))
