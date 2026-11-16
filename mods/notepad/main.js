@@ -214,6 +214,10 @@ export default class Notes extends View {
   }
 
   trashFolder(name, cx) {
+    // Gone from the list at once: waiting for the move would show it (opened by the same click) for a frame.
+    this.folders = this.folders.filter((f) => f.name !== name);
+    this.open.delete(name);
+    cx.notify();
     cx.spawn(async (cx) => {
       const r = await exec("mv", ["-n", this.dir(name), `${this.root}/.Trash/${name}-${Date.now()}`]);
       if (r.code !== 0) notify({ title: "Couldn't delete folder", body: r.stderr, level: "error" });
