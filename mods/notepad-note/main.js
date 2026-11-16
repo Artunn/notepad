@@ -205,8 +205,8 @@ export default class Note extends View {
           .when(Boolean(tab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`Show ${tab.name}`)
             .on_click(() => agent ? run("agent.focus", { terminal: agent.address }) : run("tab.select", { id: tab.id })))
           .child(status === "working"
-            ? svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(ORANGE).spin(900)
-            : div().flex_none().text_color(ORANGE).child("✻"))
+            ? svg("mods/workspace-chrome/spinner.svg").size(14).flex_none().text_color(ORANGE).spin(900)
+            : div().flex_none().text_size(17).line_height(1).text_color(ORANGE).child("✻"))
           .child(div().min_w(0).truncate().text_color(t.foreground).child(l.snippet))
           .child(div().flex_none().text_color(t.dim).child(`→ ${tab?.name ?? "agent"}`))
           .child(div().flex_none().text_color(color).child(label))
