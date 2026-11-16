@@ -17,15 +17,17 @@ const allTabs = () => spaces().flatMap((s) => s.tabs);
 // Selected text sent to an agent is kept in the file as `text` ✻ (markdown inline code, then the
 // mark) and drawn in the editor as one boxed chip, Slack code style, live while its agent works.
 const SENT = /`([^`\n]+)` ✻/g;
-// Done text is kept as ~~text~~ (markdown strikethrough) and drawn faded with a line through it.
-const STRUCK = /~~([^~\n]+)~~/g;
-const SPANS = /~~([^~\n]+)~~|`([^`\n]+)` ✻/g;
 const unbox = (text) => text.replace(SENT, "$1").split(MARK).join("");
 const boxed = (text) => ({
   text,
-  tokens: [...text.matchAll(SPANS)].map((m) => ({ range: { start: m.index, end: m.index + m[0].length },
-    token: m[1] != null ? { id: `struck-${m.index}`, text: m[0], label: m[1] } : { id: `sent-${m.index}`, text: m[0], label: m[2] } })),
+  tokens: [...text.matchAll(SENT)].map((m) => ({ range: { start: m.index, end: m.index + m[0].length }, token: { id: `sent-${m.index}`, text: m[0], label: m[1] } })),
 });
+// Done text: in the editor every character carries U+0336 (combining long stroke), so it keeps the
+// body's font, wraps and edits as text; in the file it is ~~text~~ (markdown strikethrough).
+const S = "\u0336";
+const toFile = (text) => text.replace(/(?:[^\u0336\n]\u0336)+/gu, (run) => `~~${run.split(S).join("")}~~`);
+const fromFile = (text) => text.replace(/~~([^~\n]+)~~/g, (_m, inner) => [...inner].map((c) => c + S).join(""));
+const struck = (str) => [...str].map((c) => c + S).join("");
 
 const base = (f) => f?.split("/").pop();
 const title = (text) => (text.split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").trim() || "New Note";
@@ -69,15 +71,7 @@ export default class Note extends View {
   }
 
   // Every write to the body goes through here, so sent text comes back as chips.
-  setBody(text) { this.body.set_value(boxed(text)); }
-
-  // A token's look: struck text faded with a line through it (a struck chip stays a chip), or a chip.
-  token({ token }, t, size) {
-    if (!token.id.startsWith("struck")) return this.chip(token.label ?? token.text, t, size);
-    const sent = /^`([^`\n]+)` ✻$/.exec(token.label);
-    if (sent) return this.chip(sent[1], t, size).opacity(0.5).line_through();
-    return div().font_family(".SystemUIFont").text_size(size).text_color(t.dim).line_through().child(token.label);
-  }
+  setBody(text) { this.body.set_value(boxed(fromFile(text))); }
 
   // A sent chip: its text in a code box, orange-bordered with a spinner while its agent works.
   chip(inner, t, size) {
@@ -95,9 +89,10 @@ export default class Note extends View {
         : div().flex_none().text_color(ORANGE).child("✻"));
   }
 
+  // The note as the file holds it (struck text as ~~text~~).
   text() {
     const body = this.body.value();
-    return body ? `${this.head.value()}\n${body}` : this.head.value();
+    return toFile(body ? `${this.head.value()}\n${body}` : this.head.value());
   }
 
   async load() {
@@ -120,10 +115,10 @@ export default class Note extends View {
     if (now === null || now === this.saved || this.dirty) return;
     const nl = now.indexOf("\n");
     this.saved = now;
-    this.last = nl < 0 ? "" : now.slice(nl + 1); // not an Enter for continueList
     // set_value keeps the caret where it was (as far as the new text reaches).
     this.head.set_value(nl < 0 ? now : now.slice(0, nl));
-    this.setBody(this.last);
+    this.setBody(nl < 0 ? "" : now.slice(nl + 1));
+    this.last = this.body.value(); // not an Enter for continueList
     this.nameTab(now);
     setShared("notepad.live", { file: this.file, title: title(now) });
   }
@@ -210,27 +205,27 @@ export default class Note extends View {
     this.dirty = true;
   }
 
-  // Strikes the selection through (each line apart; at a plain caret, the caret's line), or, if it
-  // touches struck text, takes the line off that instead. List prefixes (☐, •, 1.) stay unstruck.
+  // Strikes the selection through (at a plain caret, its line), or takes the line off if it has
+  // any. List prefixes (☐, •, 1.) stay unstruck. Done as one replace, so ⌘Z undoes it.
   strike(r) {
     if (!r) return;
     const text = this.body.value();
-    const hits = [...text.matchAll(STRUCK)].filter((m) => m.index <= r.end && m.index + m[0].length >= r.start);
-    let out = text;
-    if (hits.length) {
-      for (const m of hits.reverse()) out = out.slice(0, m.index) + m[1] + out.slice(m.index + m[0].length);
-    } else {
-      let { start, end } = r;
-      if (start === end) { start = text.lastIndexOf("\n", start - 1) + 1; end = text.indexOf("\n", end); if (end < 0) end = text.length; }
-      const lines = text.slice(start, end).split("\n").map((l) => {
-        const m = l.match(/^((?:☐ |☑ |• |– |▏ |\d+\. )?\s*)(.*?)(\s*)$/);
-        return m[2] && !m[2].includes("~~") ? `${m[1]}~~${m[2]}~~${m[3]}` : l;
-      });
-      out = text.slice(0, start) + lines.join("\n") + text.slice(end);
-    }
-    if (out === text) return;
-    this.setBody(out);
-    this.last = out;
+    let { start, end } = r;
+    if (start === end) { start = text.lastIndexOf("\n", start - 1) + 1; end = text.indexOf("\n", end); if (end < 0) end = text.length; }
+    const seg = text.slice(start, end);
+    const on = !seg.includes(S);
+    // Chips are tokens: stroke only the text around them.
+    const line = (l) => l.split(/(`[^`\n]+` ✻)/).map((part, k) => k % 2 ? part : struck(part)).join("");
+    const next = seg.split("\n").map((l) => {
+      if (!on) return l.split(S).join("");
+      const m = l.match(/^((?:☐ |☑ |• |– |▏ |\d+\. )?\s*)(.*?)(\s*)$/);
+      return m[2] ? m[1] + line(m[2]) + m[3] : l;
+    }).join("\n");
+    if (next === seg) return;
+    if (/`[^`\n]+` ✻/.test(seg)) this.setBody(text.slice(0, start) + next + text.slice(end)); // replace() would drop the chip
+    else { this.body.set_selected_range({ start, end }); this.body.replace(next); }
+    this.body.set_selected_range(r.start === r.end ? { start: start + next.length, end: start + next.length } : { start, end: start + next.length });
+    this.last = this.body.value();
     this.dirty = true;
   }
 
@@ -466,7 +461,7 @@ export default class Note extends View {
           this.strike(this.range());
           cx.notify();
         })
-        .child(Textarea.new(this.body).token((tok) => this.token(tok, t, size)).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
+        .child(Textarea.new(this.body).token(({ token }) => this.chip(token.label ?? token.text, t, size)).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
         // Drawn over the body so it gets right presses first: stopping them keeps the selection.
         // Left presses carry on to the textarea underneath.
         .child(div().id("note-right-click").absolute().inset(0)

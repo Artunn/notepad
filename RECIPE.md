@@ -73,8 +73,10 @@ Editor:
   A multi-line selection only gets ` ✻` after it. Backticks and marks are stripped from anything
   sent later.
 - Strikethrough for done things: ⌘⇧X, the S̶ toolbar button, or right-click → Strikethrough.
-  Saved as `~~text~~`, drawn faded with a line through it (each line apart, list prefixes left
-  unstruck; a plain caret strikes its line). The same again on struck text takes the line off. Every agent a note started shows in a bar under the toolbar: what was sent, `→` its
+  Saved as `~~text~~`; in the editor each struck character carries U+0336 (combining long
+  stroke), so it keeps the body's font and line, wraps and edits as text, and the strike is one
+  `replace`, so ⌘Z undoes it. List prefixes stay unstruck; a plain caret strikes its line. The
+  same again on struck text takes the line off. Every agent a note started shows in a bar under the toolbar: what was sent, `→` its
   tab, and its status (an orange ✻, an orange spinner and border while working, colored blocked / done / idle, "ended" when its tab
   is gone). Click a chip to go to that agent; `×` forgets the link. Links are shared
   `"notepad.links"` (`{ file: [{ id, snippet, tab }] }`); the agent's tab is found as the first
