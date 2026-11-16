@@ -67,6 +67,12 @@ Editor:
   (Claude Code first) in a new tab with the note as its first message.
 - Right-click in the body: a small menu at the pointer, "New agent with selection" / "New agent
   with whole note". The selection stays highlighted while the menu is open.
+- Sent selections get a Claude mark ` ✻` after them in the text (stripped from anything sent
+  later). Every agent a note started shows in a bar under the toolbar: what was sent, `→` its
+  tab, and its status (spinner while working, colored blocked / done / idle, "ended" when its tab
+  is gone). Click a chip to go to that agent; `×` forgets the link. Links are shared
+  `"notepad.links"` (`{ file: [{ id, snippet, tab }] }`); the agent's tab is found as the first
+  tab that wasn't there when it was sent (`run` returns no ids).
 
 Agents:
 

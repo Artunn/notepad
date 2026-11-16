@@ -6,7 +6,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { theme, props, readTextFile, writeTextFile, shared, setShared, run, notify, openOverlay, knownAgents, exec, home } from "herdr";
+import { theme, props, readTextFile, writeTextFile, shared, setShared, run, notify, openOverlay, knownAgents, exec, home, spaces, agents } from "herdr";
+
+// The Claude mark put after text sent to an agent (notepad-menu strips it from what it sends).
+const MARK = " ✻";
+const allTabs = () => spaces().flatMap((s) => s.tabs);
 
 const base = (f) => f?.split("/").pop();
 const title = (text) => (text.split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").trim() || "New Note";
@@ -126,6 +130,12 @@ export default class Note extends View {
         });
       }
     }
+    this.resolveLinks();
+    const sent = shared("notepad.sent");
+    if (sent?.file === this.file && this.loaded) {
+      setShared("notepad.sent", null);
+      this.markSent(sent);
+    }
     const ask = shared("notepad.rename");
     if (ask?.file === this.file && this.loaded) {
       setShared("notepad.rename", null);
@@ -133,6 +143,75 @@ export default class Note extends View {
       this.dirty = true;
       this.enqueue(cx, () => this.flush());
     }
+  }
+
+  // Puts the Claude mark after the sent text: where it was selected if it is still there, else
+  // after its first match. A selection ending in line breaks gets the mark before them.
+  markSent({ range, selection }) {
+    const text = this.body.value();
+    const sel = selection.replace(/\s+$/, "");
+    if (!sel) return;
+    let start = text.slice(range.start, range.start + sel.length) === sel ? range.start : text.indexOf(sel);
+    if (start < 0) return;
+    const end = start + sel.length;
+    if (text.slice(end, end + MARK.length) === MARK) return;
+    this.body.set_value(text.slice(0, end) + MARK + text.slice(end));
+    this.last = this.body.value();
+    this.dirty = true;
+  }
+
+  // A link's agent tab is the first tab that wasn't there when it was sent.
+  resolveLinks() {
+    const links = shared("notepad.links") ?? {};
+    const mine = links[this.file];
+    if (!mine?.some((l) => !l.tab)) return;
+    const tabs = allTabs().map((t) => t.id);
+    const taken = new Set(Object.values(links).flat().map((l) => l.tab).filter(Boolean));
+    let changed = false;
+    const next = mine.map((l) => {
+      if (l.tab) return l;
+      const tab = tabs.find((id) => !l.before.includes(id) && !taken.has(id));
+      // Never showed up (the agent failed to start): drop it after a minute.
+      if (!tab) { if (Date.now() - l.at > 60000) { changed = true; return null; } return l; }
+      taken.add(tab); changed = true;
+      return { id: l.id, snippet: l.snippet, tab, at: l.at };
+    }).filter(Boolean);
+    if (changed) setShared("notepad.links", { ...links, [this.file]: next });
+  }
+
+  unlink(id) {
+    const links = shared("notepad.links") ?? {};
+    setShared("notepad.links", { ...links, [this.file]: (links[this.file] ?? []).filter((l) => l.id !== id) });
+  }
+
+  // The agents this note started: what was sent, the agent's tab, and its status.
+  linkBar(t) {
+    const live = new Map(allTabs().map((tab) => [tab.id, tab]));
+    const links = (shared("notepad.links") ?? {})[this.file] ?? [];
+    if (!links.length) return null;
+    const COLOR = { working: t.working, blocked: t.blocked, done: t.done, idle: t.idle };
+    const WORD = { working: "working", blocked: "needs you", done: "done", idle: "idle" };
+    return h_flex().id("note-links").w_full().flex_none().px(12).py(6).gap(6).flex_wrap().border_b(1).border_color(t.border).text_size(12)
+      .children(links.map((l) => {
+        const tab = l.tab ? live.get(l.tab) : null;
+        const agent = tab ? agents().find((a) => a.tab === tab.id) : null;
+        const status = agent?.status ?? null;
+        const color = status ? COLOR[status] : t.dim;
+        const label = !l.tab ? "starting…" : !tab ? "ended" : WORD[status] ?? "no agent";
+        return h_flex().id(`link-${l.id}`).h(24).pl(8).pr(4).gap(6).items_center().rounded(6).max_w(360)
+          .border_1().border_color(status === "working" ? color : t.border).bg(t.surface)
+          .when(Boolean(tab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`Show ${tab.name}`)
+            .on_click(() => agent ? run("agent.focus", { terminal: agent.address }) : run("tab.select", { id: tab.id })))
+          .child(status === "working"
+            ? svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(color).spin(900)
+            : div().flex_none().text_color(color).child("✻"))
+          .child(div().min_w(0).truncate().text_color(t.foreground).child(l.snippet))
+          .child(div().flex_none().text_color(t.dim).child(`→ ${tab?.name ?? "agent"}`))
+          .child(div().flex_none().text_color(color).child(label))
+          .child(div().id(`unlink-${l.id}`).flex_none().px(4).rounded(4).text_color(t.dim).cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Forget this link")
+            .on_click((_e, cx) => { cx.stop_propagation(); this.unlink(l.id); }).child("×"));
+      }));
   }
 
   // Leaving a note saves it. Empty notes stay: they are deleted only from the sidebar.
@@ -243,14 +322,17 @@ export default class Note extends View {
 
   // A new tab running the most-picked installed agent, the note as its first message.
   runAgent(cx) {
-    const text = this.text().trim();
+    const text = this.text().split(MARK).join("").trim();
     if (!text) return notify({ title: "The note is empty", level: "warning" });
     cx.spawn(async () => {
       try {
         const agent = (await knownAgents()).filter((a) => a.installed).sort((a, b) => (b.key === "claude") - (a.key === "claude"))[0];
         if (!agent) return notify({ title: "No agent installed", level: "warning" });
         // Herdr passes the task as the agent's last argument: "- item" would read as an option, so end options first.
+        const before = allTabs().map((t) => t.id);
         run("tab.new", { name: title(text).slice(0, 40), argv: text.startsWith("-") ? [...agent.run, "--"] : agent.run, task: text });
+        const links = shared("notepad.links") ?? {};
+        setShared("notepad.links", { ...links, [this.file]: [...(links[this.file] ?? []), { id: String(Date.now()), snippet: title(text).slice(0, 60), tab: null, before, at: Date.now() }] });
       } catch (e) {
         notify({ title: "Couldn't start agent", body: String(e?.message ?? e), level: "error" });
       }
@@ -305,6 +387,7 @@ export default class Note extends View {
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Start an agent with this note")
           .on_click((_e, cx) => this.runAgent(cx))
           .child(svg("mods/workspace-chrome/terminal.svg").size(12)).child("Run agent")))
+      .child(this.linkBar(t) ?? div())
       .child(v_flex().flex_1().min_h(0).w_full().px(40).pt(14).pb(12).gap(10)
       .child(div().w_full().flex().justify_center().text_size(12).text_color(t.dim).child(date))
       .child(Input.new(this.head).w_full().h(Math.round(size * 2.6)).font_family(".SystemUIFont").text_size(Math.round(size * 1.73)).font_bold().text_color(t.foreground))
@@ -318,7 +401,7 @@ export default class Note extends View {
             // A window, not a popup: it leaves the keyboard with the body, and the body only draws
             // its selection while it has the keyboard. note-menu closes itself on a press outside.
             openOverlay({ mod: "notepad-menu", kind: "window", at: { x: e.position.x, y: e.position.y }, width: 240, height: 76,
-              props: { file: this.file, selection: this.selection() } });
+              props: { file: this.file, range: this.range(), selection: this.selection() } });
           }))))
       .when(Boolean(this.formatOpen), (el) => el.child(menu));
   }
