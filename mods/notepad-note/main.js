@@ -14,6 +14,15 @@ const MARK = " ✻";
 const ORANGE = "#d97757";
 const allTabs = () => spaces().flatMap((s) => s.tabs);
 
+// Selected text sent to an agent is kept in the file as `text` ✻ (markdown inline code, then the
+// mark) and drawn in the editor as one boxed chip, Slack code style, live while its agent works.
+const SENT = /`([^`\n]+)` ✻/g;
+const unbox = (text) => text.replace(SENT, "$1").split(MARK).join("");
+const boxed = (text) => ({
+  text,
+  tokens: [...text.matchAll(SENT)].map((m) => ({ range: { start: m.index, end: m.index + m[0].length }, token: { id: `sent-${m.index}`, text: m[0], label: m[1] } })),
+});
+
 const base = (f) => f?.split("/").pop();
 const title = (text) => (text.split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").trim() || "New Note";
 
@@ -55,6 +64,26 @@ export default class Note extends View {
       .then(() => { try { cx.notify(); } catch {} });
   }
 
+  // Every write to the body goes through here, so sent text comes back as chips.
+  setBody(text) { this.body.set_value(boxed(text)); }
+
+  // A sent chip: its text in a code box, orange-bordered with a spinner while its agent works.
+  chip({ token }, t, size) {
+    const inner = token.label ?? token.text;
+    const links = (shared("notepad.links") ?? {})[this.file] ?? [];
+    const link = links.filter((l) => l.snippet === inner.trim().slice(0, 60)).pop();
+    const tab = link?.tab ? allTabs().find((x) => x.id === link.tab) : null;
+    const agent = tab ? agents().find((a) => a.tab === tab.id) : null;
+    const working = !!link && (!link.tab || agent?.status === "working");
+    return h_flex().items_center().gap(5).px(5).rounded(4).border_1()
+      .border_color(working ? ORANGE : t.border).bg(t.surface)
+      .font_family("Menlo").text_size(Math.round(size * 0.87)).text_color("#e8912d")
+      .child(inner)
+      .child(working
+        ? svg("mods/workspace-chrome/spinner.svg").size(Math.round(size * 0.8)).flex_none().text_color(ORANGE).spin(900)
+        : div().flex_none().text_color(ORANGE).child("✻"));
+  }
+
   text() {
     const body = this.body.value();
     return body ? `${this.head.value()}\n${body}` : this.head.value();
@@ -64,7 +93,7 @@ export default class Note extends View {
     this.saved = (await readTextFile(this.file)) ?? "";
     const nl = this.saved.indexOf("\n");
     this.head.set_value(nl < 0 ? this.saved : this.saved.slice(0, nl));
-    this.body.set_value(nl < 0 ? "" : this.saved.slice(nl + 1));
+    this.setBody(nl < 0 ? "" : this.saved.slice(nl + 1));
     this.last = this.body.value();
     this.head.set_selected_range({ start: 0, end: 0 });
     this.body.set_selected_range({ start: 0, end: 0 });
@@ -83,7 +112,7 @@ export default class Note extends View {
     this.last = nl < 0 ? "" : now.slice(nl + 1); // not an Enter for continueList
     // set_value keeps the caret where it was (as far as the new text reaches).
     this.head.set_value(nl < 0 ? now : now.slice(0, nl));
-    this.body.set_value(this.last);
+    this.setBody(this.last);
     this.nameTab(now);
     setShared("notepad.live", { file: this.file, title: title(now) });
   }
@@ -157,7 +186,10 @@ export default class Note extends View {
     if (start < 0) return;
     const end = start + sel.length;
     if (text.slice(end, end + MARK.length) === MARK) return;
-    this.body.set_value(text.slice(0, end) + MARK + text.slice(end));
+    // One line: boxed. Several: just the mark after them, as before.
+    this.setBody(sel.includes("\n") || sel.includes("`")
+      ? text.slice(0, end) + MARK + text.slice(end)
+      : `${text.slice(0, start)}\`${sel}\`${MARK}${text.slice(end)}`);
     this.last = this.body.value();
     this.dirty = true;
   }
@@ -222,20 +254,10 @@ export default class Note extends View {
   // Closing its tab (Delete, ⌘W) saves what's typed first.
   async close() { await this.leave(); }
 
-  // The body's selection { start, end } (UTF-16, as JS strings index; start = end: the caret). The
-  // state has no getter, but replace() puts text where the selection is: put a marker there, find it,
-  // then put the text and the selection back as they were.
+  // The body's selection { start, end } (UTF-16, as JS strings index; start = end: the caret).
   range() {
-    const M = "\uE000";
-    const before = this.body.value();
-    this.body.replace(M);
-    const after = this.body.value();
-    const start = after.indexOf(M);
-    this.body.set_value(before);
-    if (start < 0) return null;
-    const end = start + before.length - (after.length - 1);
-    this.body.set_selected_range({ start, end });
-    return { start, end };
+    const r = this.body.selected_range();
+    return r ? { start: r.start, end: r.end } : null;
   }
 
   selection() {
@@ -253,7 +275,7 @@ export default class Note extends View {
     const prev = text.slice(text.lastIndexOf("\n", ls - 2) + 1, Math.max(ls - 1, 0)).match(/^(\d+)\. /);
     const swap = pick(mark, prev ? `${Number(prev[1]) + 1}. ` : "1. ");
     const d = swap.length - mark.length;
-    this.body.set_value(text.slice(0, ls) + swap + text.slice(ls + mark.length));
+    this.setBody(text.slice(0, ls) + swap + text.slice(ls + mark.length));
     const start = Math.max(ls, r.start + d);
     this.body.set_selected_range({ start, end: Math.max(start, r.end + d) });
     this.body.focus();
@@ -300,7 +322,7 @@ export default class Note extends View {
       caret = p + 1 + next.length;
     }
     this.last = out;
-    this.body.set_value(out);
+    this.setBody(out);
     this.body.set_selected_range({ start: caret, end: caret });
     this.dirty = true;
   }
@@ -324,7 +346,7 @@ export default class Note extends View {
 
   // A new tab running the most-picked installed agent, the note as its first message.
   runAgent(cx) {
-    const text = this.text().split(MARK).join("").trim();
+    const text = unbox(this.text()).trim();
     if (!text) return notify({ title: "The note is empty", level: "warning" });
     cx.spawn(async () => {
       try {
@@ -394,7 +416,7 @@ export default class Note extends View {
       .child(div().w_full().flex().justify_center().text_size(12).text_color(t.dim).child(date))
       .child(Input.new(this.head).w_full().h(Math.round(size * 2.6)).font_family(".SystemUIFont").text_size(Math.round(size * 1.73)).font_bold().text_color(t.foreground))
       .child(div().flex_1().min_h(0).w_full().flex().flex_col().relative()
-        .child(Textarea.new(this.body).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
+        .child(Textarea.new(this.body).token((tok) => this.chip(tok, t, size)).flex_1().min_h(0).w_full().font_family(".SystemUIFont").text_size(size).line_height(1.35).text_color(t.foreground))
         // Drawn over the body so it gets right presses first: stopping them keeps the selection.
         // Left presses carry on to the textarea underneath.
         .child(div().id("note-right-click").absolute().inset(0)

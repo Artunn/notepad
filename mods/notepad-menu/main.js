@@ -17,7 +17,7 @@ export default class NoteMenu extends View {
       const agent = (await knownAgents()).filter((a) => a.installed).sort((a, b) => (b.key === "claude") - (a.key === "claude"))[0];
       if (!agent) return notify({ title: "No agent installed", level: "warning" });
       // Herdr passes the task as the agent's last argument: "- item" would read as an option, so end options first.
-      const text = task.split(MARK).join("").trim();
+      const text = task.replace(/`([^`\n]+)` ✻/g, "$1").split(MARK).join("").trim();
       // run() gives no ids: the note editor finds the agent's tab as the one that wasn't there before.
       const before = spaces().flatMap((s) => s.tabs.map((t) => t.id));
       run("tab.new", { name: text.split("\n")[0].slice(0, 40), argv: text.startsWith("-") ? [...agent.run, "--"] : agent.run, task: text });

@@ -67,8 +67,11 @@ Editor:
   (Claude Code first) in a new tab with the note as its first message.
 - Right-click in the body: a small menu at the pointer, "New agent with selection" / "New agent
   with whole note". The selection stays highlighted while the menu is open.
-- Sent selections get a Claude mark ` ✻` after them in the text (stripped from anything sent
-  later). Every agent a note started shows in a bar under the toolbar: what was sent, `→` its
+- A sent one-line selection is saved as `` `text` ✻ `` (inline code, then the Claude mark) and
+  drawn in the body as one boxed chip, Slack code style: monospace, orange text, thin border,
+  rounded. While its agent starts or works the border is orange and a spinner replaces the ✻.
+  A multi-line selection only gets ` ✻` after it. Backticks and marks are stripped from anything
+  sent later. Every agent a note started shows in a bar under the toolbar: what was sent, `→` its
   tab, and its status (an orange ✻, an orange spinner and border while working, colored blocked / done / idle, "ended" when its tab
   is gone). Click a chip to go to that agent; `×` forgets the link. Links are shared
   `"notepad.links"` (`{ file: [{ id, snippet, tab }] }`); the agent's tab is found as the first
@@ -123,8 +126,9 @@ Agents:
 - Herdr passes `task` as the agent's last argument: a note starting with `-` reads as an option
   to `claude`, so the mods add `--` first.
 - The textarea only paints its selection while focused, so the right-click menu is a `window`
-  overlay (a popup would take focus and hide the selection). There is no selection getter: the
-  editor finds it by replacing it with a marker character and restoring the text.
+  overlay (a popup would take focus and hide the selection). The editor reads it with
+  `selected_range()`; the chips are inline tokens, so every body write goes through `setBody`,
+  which turns `` `text` ✻ `` runs back into tokens.
 - Note file names are `Date.now()` timestamps; the date line comes from them.
 
 ## Done when
