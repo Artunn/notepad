@@ -1,0 +1,5 @@
+{
+  "layout:notepad": {
+    "ctrl-n": "notepad.new"
+  }
+}
